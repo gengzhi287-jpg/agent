@@ -1,0 +1,51 @@
+# 素材采集 Agent 配置文件（模板）
+# 复制本文件为 config.yaml 后填写你的 API Key 使用：  cp config.example.yaml config.yaml
+# 本项目使用火山引擎 Agent Plan 套餐，必须用「套餐接口」与「套餐内模型」。
+
+llm:
+  # 套餐接口（勿用 /api/v3，否则 401/404）
+  base_url: "https://ark.cn-beijing.volces.com/api/plan/v3"
+  api_key: ""                # 填入你的套餐 API Key
+  model: "doubao-seed-2-1-turbo-260628"      # 套餐内多模态模型（支持看图+工具调用）
+  embedding_model: "doubao-embedding-vision-251215"  # 记忆向量化模型
+  available_models:
+    - "doubao-seed-2-1-turbo-260628"
+    - "doubao-seed-2-0-lite"
+
+  # 预设：不同人可各自配置一套模型，页面「设置模型」里下拉选择即可。
+  # name/base_url/model 会显示给用户；api_key 由服务端读取，不下发到页面。
+  presets:
+    - name: "火山方舟-套餐(Agent Plan)"
+      base_url: "https://ark.cn-beijing.volces.com/api/plan/v3"
+      model: "doubao-seed-2-1-turbo-260628"
+      api_key: ""
+    - name: "OpenAI"
+      base_url: "https://api.openai.com/v1"
+      model: "gpt-4o-mini"
+      api_key: ""
+
+# 搜索源：默认 bing（无需 Key）。Pixabay / Pexels 需填写对应 API Key，更稳定、版权更清晰。
+search:
+  provider: "bing"           # bing | pixabay | pexels
+  pixabay:
+    api_key: ""              # https://pixabay.com/api/docs/
+  pexels:
+    api_key: ""              # https://www.pexels.com/api/
+
+save:
+  root_dir: "素材库"
+  max_size_kb: 1024
+  allowed_exts: [".jpg", ".jpeg", ".png"]
+  count_per_keyword: 20
+
+crawl:
+  max_concurrency: 4
+
+# 过滤规则：符合条件则跳过该图（不保存）
+filter:
+  min_width: 0          # 小于此宽度的图片跳过；0 表示不限制
+  min_height: 0         # 小于此高度的图片跳过；0 表示不限制
+  exclude_topics: []    # 不保存的主题词列表（AI 分类结果匹配则跳过），如 ["文字", "截图"]
+
+logs:
+  dir: "logs"

@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>素材采集 Agent</title>
+<style>
+  :root {
+    --accent:#2563eb; --accent2:#0ea5e9; --bg:#eef3fb; --card:#fff;
+    --line:#dbe6f3; --text:#16243a; --muted:#5c6b80;
+    --ok:#16a34a; --warn:#d97706; --err:#ef4444;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  .statusbar { position:fixed; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg,var(--accent),var(--accent2)); display:none; z-index:50; animation:pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  .app { max-width:860px; margin:0 auto; padding:22px 16px 60px; }
+  .top { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+  .brand { font-size:20px; font-weight:800; letter-spacing:.3px; }
+  .brand span { background:linear-gradient(90deg,var(--accent),var(--accent2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+
+  .ghost { background:#fff; border:1px solid var(--line); color:#374151; padding:8px 14px; border-radius:999px; font-size:13px; cursor:pointer; }
+  .ghost:hover { background:#eaf2fb; }
+
+  .hero { background:linear-gradient(160deg,#ffffff 0%,#eff6fe 100%); border:1px solid var(--line); border-radius:18px; padding:24px; box-shadow:0 8px 30px rgba(37,99,235,.10); }
+  .hero h2 { margin:0 0 4px; font-size:19px; }
+  .hero .sub { margin:0 0 16px; color:var(--muted); font-size:13px; }
+  .hero textarea { width:100%; min-height:110px; padding:14px 16px; border:1px solid var(--line); border-radius:12px; font-size:15px; font-family:inherit; resize:vertical; background:#fff; outline:none; }
+  .hero textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(37,99,235,.18); }
+  .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:16px; }
+
+  button { border:0; cursor:pointer; font-family:inherit; }
+  .primary { background:linear-gradient(90deg,var(--accent),var(--accent2)); color:#fff; padding:11px 26px; border-radius:999px; font-size:15px; font-weight:600; box-shadow:0 4px 14px rgba(37,99,235,.35); transition:transform .08s, box-shadow .2s; }
+  .primary:not(:disabled):hover { box-shadow:0 6px 20px rgba(37,99,235,.45); transform:translateY(-1px); }
+  .primary:disabled { background:#c7c9d6; box-shadow:none; }
+  .sec { background:#fff; border:1px solid var(--line); color:#374151; padding:10px 18px; border-radius:999px; font-size:14px; }
+  .sec:not(:disabled):hover { background:#eaf2fb; }
+  .sec:disabled { color:#b0b3c0; cursor:not-allowed; }
+  .sec.danger:not(:disabled) { color:var(--err); border-color:#fca5a5; background:#fff5f5; }
+  .pill { font-size:13px; color:var(--accent); background:#dbeafe; padding:5px 12px; border-radius:999px; }
+
+  .msg { margin-top:12px; font-size:13px; color:var(--err); white-space:pre-wrap; }
+  .msg.ok { color:var(--ok); }
+
+  .sections { margin-top:18px; display:flex; flex-direction:column; gap:10px; }
+  details { background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  summary { cursor:pointer; padding:13px 18px; font-weight:600; font-size:14px; color:#374151; list-style:none; user-select:none; }
+  summary::-webkit-details-marker { display:none; }
+  summary::before { content:"▸"; margin-right:8px; color:var(--accent); display:inline-block; transition:transform .15s; }
+  details[open] summary::before { transform:rotate(90deg); }
+  .pad { padding:0 16px 16px; }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; background:#f0f6ff; }
+  tr:last-child td { border-bottom:0; }
+  .tag-ok{color:var(--ok)} .tag-warn{color:var(--warn)} .tag-err{color:var(--err)}
+  .hint { font-size:12px; color:#9aa0b0; margin:4px 0; }
+
+  .logbox { background:#0f172a; color:#cbd5e1; font-family:Consolas,monospace; font-size:12px; padding:14px; border-radius:10px; height:220px; overflow:auto; white-space:pre-wrap; }
+  .btn-mini { background:#dbeafe; color:var(--accent); border:1px solid #bfdbfe; padding:5px 12px; border-radius:8px; cursor:pointer; font-size:12px; }
+  .btn-mini:hover { background:#c7d7fe; }
+  #bgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px; }
+  #bgrid img { width:100%; height:110px; object-fit:cover; border-radius:8px; border:1px solid var(--line); cursor:pointer; }
+
+  .modal-mask { display:none; position:fixed; inset:0; background:rgba(15,23,42,.5); z-index:60; align-items:flex-start; justify-content:center; padding:60px 16px; }
+  .modal-mask.show { display:flex; }
+  .modal { background:#fff; border-radius:16px; width:100%; max-width:460px; padding:20px 22px; box-shadow:0 12px 40px rgba(0,0,0,.25); }
+  .modal h3 { margin:0 0 4px; font-size:16px; }
+  .modal .close { float:right; background:none; border:0; font-size:20px; cursor:pointer; color:var(--muted); }
+  .modal label { display:block; font-size:13px; margin:12px 0 4px; color:#374151; }
+  .modal input, .modal select { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:9px; font-size:14px; font-family:inherit; }
+  .modal .foot { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }
+</style>
+</head>
+<body>
+<div class="statusbar" id="statusbar"></div>
+<div class="app">
+  <header class="top">
+    <div class="brand">🖼️ 素材采集 <span>Agent</span></div>
+    <button class="ghost" id="settingsBtn">⚙ 设置模型</button>
+  </header>
+
+  <section class="hero">
+    <h2>🤖 告诉我你想收集什么素材</h2>
+    <p class="sub">大模型会自主决定关键词、数量与搜索源，爬取后自动分类保存到素材库</p>
+    <textarea id="agentGoal" placeholder="例如：帮我收集 15 张山水风景和 8 张猫咪的图片，尽量高清"></textarea>
+    <div class="actions">
+      <button class="primary" id="agentBtn">开始采集</button>
+      <button class="sec" id="pauseBtn" disabled>⏸ 暂停</button>
+      <button class="sec" id="resumeBtn" disabled>▶ 继续</button>
+      <button class="sec danger" id="cancelBtn" disabled>⏹ 取消</button>
+      <span id="runState" class="pill"></span>
+    </div>
+    <div class="msg" id="agentMsg"></div>
+  </section>
+
+  <div class="sections">
+    <details open>
+      <summary>实时进度</summary>
+      <div class="pad">
+        <table id="tasks"><thead><tr><th>任务</th><th>状态</th><th>已下载</th><th>已保存</th><th>失败</th></tr></thead><tbody></tbody></table>
+      </div>
+    </details>
+
+    <details id="reportCard" style="display:none">
+      <summary>结果汇总</summary>
+      <div class="pad">
+        <div style="text-align:right;margin-bottom:8px"><a class="btn-mini" id="exportLink" href="/api/export" download>导出报告</a></div>
+        <div id="reportBody"></div>
+      </div>
+    </details>
+
+    <details>
+      <summary>任务历史</summary>
+      <div class="pad">
+        <div style="text-align:right;margin-bottom:8px"><button class="btn-mini" id="refreshHist">刷新</button></div>
+        <div id="historyList"><div class="hint">暂无历史记录</div></div>
+      </div>
+    </details>
+
+    <details>
+      <summary>记忆（长期规则）</summary>
+      <div class="pad">
+        <div class="hint" style="margin-bottom:8px">以下规则会在每次采集时自动提示给 Agent，跨会话有效。</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input type="text" id="memRule" placeholder="输入想让 Agent 长期记住的规则，例如：优先用 Pixabay">
+          <button class="btn-mini" id="memAdd">记住</button>
+        </div>
+        <div id="memList"><div class="hint">加载中…</div></div>
+      </div>
+    </details>
+
+    <details>
+      <summary>素材浏览</summary>
+      <div class="pad">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <div style="flex:1;min-width:150px"><label class="hint">关键词</label><select id="bkw"></select></div>
+          <div style="flex:1;min-width:150px"><label class="hint">主题</label><select id="btp"></select></div>
+          <div style="display:flex;align-items:flex-end"><button class="btn-mini" id="refreshBrowse">刷新</button></div>
+        </div>
+        <div id="bgrid"></div>
+      </div>
+    </details>
+
+    <details>
+      <summary>运行日志</summary>
+      <div class="pad"><div class="logbox" id="logbox"></div></div>
+    </details>
+  </div>
+</div>
+
+<div class="modal-mask" id="modalMask">
+  <div class="modal">
+    <h3>设置模型</h3>
+    <button class="close" id="closeModal">×</button>
+    <div class="hint">OpenAI 兼容的多模态大模型接口，支持图片输入即可。</div>
+    <label>选择预设</label>
+    <select id="preset"><option value="">自定义</option></select>
+    <label>Base URL</label>
+    <input type="text" id="base_url" placeholder="https://ark.cn-beijing.volces.com/api/v3">
+    <label>API Key</label>
+    <input type="password" id="api_key" placeholder="粘贴 API Key">
+    <label>模型</label>
+    <input type="text" id="model" placeholder="doubao-seed-1.6-flash">
+    <div class="foot">
+      <button class="sec" id="cancelModal">取消</button>
+      <button class="primary" id="saveSettings">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="msg" style="display:none"></div>
+
+<script>
+
+const $ = id => document.getElementById(id);
+const LS_KEY = 'material_agent_llm';
+let polling = null;
+let wasRunning = false;
+let wasPaused = false;
+
+// 提示音：完成/暂停/恢复 用 Web Audio 生成
+function playSound(kind) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+    const notes = {
+      done: [[880, 0, 0.15], [1174, 0.18, 0.25]],
+      pause: [[660, 0, 0.15], [440, 0.18, 0.15]],
+      resume: [[440, 0, 0.12], [660, 0.14, 0.15]],
+    }[kind] || [];
+    notes.forEach(([freq, offset, dur]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.25, now + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + dur);
+    });
+  } catch (e) {}
+}
+
+// ---------- 关键词 / URL 动态输入 ----------
+// ---------- 模型设置（存本地） ----------
+function fillPresets(presets) {
+  const sel = $('preset');
+  sel.innerHTML = '<option value="">自定义</option>';
+  presets.forEach(p => {
+    const o = document.createElement('option');
+    o.value = p.name;
+    o.textContent = p.name;
+    sel.appendChild(o);
+  });
+  sel.onchange = () => {
+    if (!sel.value) return;
+    const p = presets.find(x => x.name === sel.value);
+    if (p) {
+      $('base_url').value = p.base_url || '';
+      $('model').value = p.model || '';
+      $('api_key').value = '';   // 预设的 key 由服务端读取，页面不填
+    }
+  };
+}
+function loadDefaults() {
+  fetch('/api/config').then(r => r.json()).then(c => {
+    fillPresets(c.presets || []);
+    const saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+    $('base_url').value = saved.base_url || c.default_base_url || '';
+    $('api_key').value = saved.api_key || '';
+    $('model').value = saved.model || c.default_model || '';
+    $('preset').value = saved.preset || '';
+  });
+}
+$('settingsBtn').onclick = () => $('modalMask').classList.add('show');
+$('closeModal').onclick = () => $('modalMask').classList.remove('show');
+$('cancelModal').onclick = () => $('modalMask').classList.remove('show');
+$('saveSettings').onclick = () => {
+  const cfg = {
+    preset: $('preset').value,
+    base_url: $('base_url').value.trim(),
+    api_key: $('api_key').value.trim(),
+    model: $('model').value.trim(),
+  };
+  localStorage.setItem(LS_KEY, JSON.stringify(cfg));
+  $('modalMask').classList.remove('show');
+};
+
+// ---------- 状态轮询 ----------
+function statusPoll() {
+  fetch('/api/status').then(r => r.json()).then(s => {
+    $('statusbar').style.display = s.running ? 'block' : 'none';
+    $('agentBtn').disabled = s.running;
+    $('pauseBtn').disabled = !(s.running && !s.paused);
+    $('resumeBtn').disabled = !(s.running && s.paused);
+    $('cancelBtn').disabled = !s.running;
+    $('runState').textContent = s.running ? (s.paused ? '已暂停' : '运行中') : '';
+    if (wasRunning && !s.running) playSound('done');
+    else if (s.running && !wasRunning) { }  // 开始不做提示
+    if (s.running && s.paused && !wasPaused) playSound('pause');
+    if (s.running && !s.paused && wasPaused) playSound('resume');
+    wasRunning = s.running;
+    wasPaused = s.paused;
+    const tbody = $('tasks').querySelector('tbody');
+    tbody.innerHTML = '';
+    Object.values(s.tasks).forEach(t => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${escapeHtml(t.keyword)}</td><td>${escapeHtml(t.status)}</td>
+        <td>${t.downloaded}</td><td class="tag-ok">${t.saved}</td><td class="tag-err">${t.failed}</td>`;
+      tbody.appendChild(tr);
+    });
+    const box = $('logbox');
+    box.textContent = s.log.join('\n');
+    box.scrollTop = box.scrollHeight;
+    if (!s.running) {
+      fetch('/api/report').then(r => r.json()).then(renderReport).catch(() => {});
+      fetchHistory();
+      loadBrowse();
+    }
+  }).catch(() => {});
+}
+function renderReport(r) {
+  if (!r || !r.items || !r.items.length) { $('reportCard').style.display = 'none'; return; }
+  $('reportCard').style.display = 'block';
+  let html = '<div class="hint">完成时间：' + escapeHtml(r.finished_at || '') + '</div>';
+  html += '<table><thead><tr><th>任务</th><th>状态</th><th>下载</th><th>保存</th><th>失败</th><th>保存目录</th></tr></thead><tbody>';
+  r.items.forEach(i => {
+    html += '<tr><td>' + escapeHtml(i.keyword) + '</td><td>' + escapeHtml(i.status) + '</td>'
+      + '<td>' + i.downloaded + '</td><td class="tag-ok">' + i.saved + '</td>'
+      + '<td class="tag-err">' + i.failed + '</td>'
+      + '<td style="font-size:12px">' + escapeHtml(i.folder || '') + '</td></tr>';
+    Object.entries(i.errors || {}).forEach(([k, v]) => {
+      html += '<tr><td colspan="6" style="color:var(--warn);font-size:12px">失败原因[' + escapeHtml(k) + ']: ' + v + '</td></tr>';
+    });
+  });
+  html += '</tbody></table>';
+  $('reportBody').innerHTML = html;
+}
+function fetchHistory() {
+  fetch('/api/history').then(r => r.json()).then(renderHistory).catch(() => {});
+}
+function renderHistory(list) {
+  const el = $('historyList');
+  if (!list || !list.length) { el.innerHTML = '<div class="hint">暂无历史记录</div>'; return; }
+  let html = '<table><thead><tr><th>时间</th><th>任务</th><th>下载</th><th>保存</th><th>失败</th><th></th></tr></thead><tbody>';
+  list.forEach(h => {
+    const kw = (h.keywords || []).join('、') || (h.urls || []).join('、') || '-';
+    const s = h.summary || {};
+    html += '<tr><td>' + escapeHtml(h.started_at || '') + '</td><td>' + escapeHtml(kw) + '</td>'
+      + '<td>' + (s.downloaded || 0) + '</td><td class="tag-ok">' + (s.saved || 0) + '</td>'
+      + '<td class="tag-err">' + (s.failed || 0) + '</td>'
+      + '<td><button class="btn-mini" data-id="' + h.id + '">查看</button></td></tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+  $('historyList').onclick = function (e) {
+    var btn = e.target.closest('.view-btn');
+    if (btn) viewHistory(btn.getAttribute('data-id'));
+  };
+}
+function viewHistory(id) {
+  fetch('/api/history/' + id).then(r => r.json()).then(d => {
+    if (d.ok === false) { alert(d.error || '加载失败'); return; }
+    renderReport(d);
+    $('reportCard').scrollIntoView({behavior: 'smooth'});
+  }).catch(() => {});
+}
+let browseTree = {};
+function loadBrowse() {
+  fetch('/api/browse').then(r => r.json()).then(d => {
+    browseTree = d.tree || {};
+    renderBrowseKw();
+  }).catch(() => {});
+}
+function renderBrowseKw() {
+  const kw = Object.keys(browseTree);
+  const sel = $('bkw');
+  sel.innerHTML = '<option value="">（选择关键词）</option>' + kw.map(k => '<option value="' + k + '">' + k + '</option>').join('');
+  sel.onchange = () => { $('btp').innerHTML = ''; renderBrowseTp(sel.value); };
+  $('btp').innerHTML = '';
+  $('bgrid').innerHTML = '';
+  if (kw.length) renderBrowseTp(kw[0]);
+}
+function renderBrowseTp(kw) {
+  const topics = kw ? Object.keys(browseTree[kw] || {}).filter(t => t !== '') : [];
+  const sel = $('btp');
+  sel.innerHTML = '<option value="">（全部主题）</option>' + topics.map(t => '<option value="' + t + '">' + t + '</option>').join('');
+  sel.onchange = () => renderBrowseGrid(kw, sel.value);
+  renderBrowseGrid(kw, '');
+}
+function renderBrowseGrid(kw, tp) {
+  const grid = $('bgrid');
+  grid.innerHTML = '';
+  if (!kw || !browseTree[kw]) { grid.innerHTML = '<div class="hint">暂无图片</div>'; return; }
+  let urls = [];
+  Object.entries(browseTree[kw]).forEach(([t, arr]) => {
+    if (!tp || t === tp) urls = urls.concat(arr);
+  });
+  if (!urls.length) { grid.innerHTML = '<div class="hint">暂无图片</div>'; return; }
+  urls.forEach(u => {
+    const img = document.createElement('img');
+    img.src = u;
+    img.loading = 'lazy';
+    img.style.width = '100%';
+    img.style.height = '120px';
+    img.style.objectFit = 'cover';
+    img.style.borderRadius = '6px';
+    img.style.border = '1px solid var(--line)';
+    img.style.cursor = 'pointer';
+    img.onclick = () => window.open(u, '_blank');
+    grid.appendChild(img);
+  });
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+// ---------- 记忆（长期规则） ----------
+function loadMemory() {
+  fetch('/api/memory').then(r => r.json()).then(renderMemory).catch(() => {});
+}
+function renderMemory(d) {
+  const el = $('memList');
+  const list = (d && d.learned) || [];
+  if (!list.length) { el.innerHTML = '<div class="hint">暂无规则</div>'; return; }
+  let html = '<ul style="margin:0;padding-left:18px;line-height:1.8">';
+  list.forEach(r => {
+    html += '<li>' + escapeHtml(r) + ' <button class="btn-mini" data-del="' + escapeHtml(r) + '">删除</button></li>';
+  });
+  html += '</ul>';
+  el.innerHTML = html;
+  el.querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = () => {
+      fetch('/api/memory', {method:'DELETE', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({rule: btn.getAttribute('data-del')})}).then(r=>r.json()).then(loadMemory).catch(()=>{});
+    };
+  });
+}
+$('memAdd').onclick = () => {
+  const rule = $('memRule').value.trim();
+  if (!rule) { $('memRule').focus(); return; }
+  fetch('/api/memory', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({rule: rule})}).then(r=>r.json()).then(() => {
+      $('memRule').value = '';
+      loadMemory();
+    }).catch(() => {});
+};
+
+// ---------- 开始 ----------
+$('agentBtn').addEventListener('click', () => {
+  $('agentMsg').textContent = '';
+  const goal = $('agentGoal').value.trim();
+  if (!goal) { $('agentMsg').textContent = '请先描述想收集什么素材'; return; }
+  const cfg = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+  fetch('/api/agent/start', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      goal: goal,
+      preset: cfg.preset || '',
+      model: cfg.model || '',
+      base_url: cfg.base_url || '',
+      api_key: cfg.api_key || '',
+    }),
+  }).then(r => r.json()).then(d => {
+    if (!d.ok) $('agentMsg').textContent = d.error || '启动失败';
+  }).catch(e => $('agentMsg').textContent = '请求失败: ' + e);
+});
+
+function ctrl(action) {
+  fetch('/api/' + action, {method:'POST'}).then(r => r.json()).then(d => {
+    if (!d.ok) $('msg').textContent = d.error || '操作失败';
+  }).catch(e => $('msg').textContent = '请求失败: ' + e);
+}
+$('pauseBtn').onclick = () => ctrl('pause');
+$('resumeBtn').onclick = () => ctrl('resume');
+$('cancelBtn').onclick = () => { if (confirm('确定要取消当前任务吗？已保存的图片会保留。')) ctrl('cancel'); };
+
+loadDefaults();
+fetchHistory();
+loadBrowse();
+loadMemory();
+$('refreshHist').onclick = fetchHistory;
+$('refreshBrowse').onclick = loadBrowse;
+statusPoll();
+polling = setInterval(statusPoll, 1000);
+
+</script>
+</body>
+</html>

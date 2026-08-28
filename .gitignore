@@ -1,0 +1,21 @@
+# ===== 密钥与配置（含真实 API Key，禁止提交）=====
+config.yaml
+
+# ===== 本地数据 / 运行时产物 =====
+素材库/
+logs/
+memory.json
+memory_vectors.json
+
+# ===== 虚拟环境 / IDE / 缓存 =====
+.venv/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+
+# ===== 临时文件 =====
+_*.log
+*.log
+.DS_Store
+Thumbs.db
