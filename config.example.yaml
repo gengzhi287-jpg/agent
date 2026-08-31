@@ -49,3 +49,7 @@ filter:
 
 logs:
   dir: "logs"
+
+# ===== Agent 决策循环 =====
+agent:
+  max_iter: 15   # 单次任务最大工具调用轮次，达到上限后让模型补一次总结

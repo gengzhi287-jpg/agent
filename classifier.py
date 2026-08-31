@@ -1,7 +1,51 @@
 # -*- coding: utf-8 -*-
 """火山方舟豆包多模态分类模块：看图生成主题词。"""
 import base64
+import hashlib
+import json
+import os
+import threading
+
+from utils import chat_completions_url
 import requests
+
+_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "classify_cache.json")
+_CACHE_MAX = 5000
+_cache_lock = threading.Lock()
+_cache = None
+
+
+def _load_cache():
+    global _cache
+    if _cache is None:
+        try:
+            if os.path.exists(_CACHE_PATH):
+                with open(_CACHE_PATH, "r", encoding="utf-8") as f:
+                    _cache = json.load(f)
+        except Exception:
+            pass
+        if not isinstance(_cache, dict):
+            _cache = {}
+    return _cache
+
+
+def _cache_get(key):
+    with _cache_lock:
+        return _load_cache().get(key)
+
+
+def _cache_put(key, value):
+    with _cache_lock:
+        cache = _load_cache()
+        if len(cache) >= _CACHE_MAX:
+            for k in list(cache.keys())[:1000]:
+                cache.pop(k, None)
+        cache[key] = value
+        try:
+            with open(_CACHE_PATH, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False)
+        except Exception:
+            pass
 
 
 class ArkClassifier:
@@ -40,12 +84,7 @@ class ArkClassifier:
                 }
             ],
         }
-        url = self.base_url.strip().rstrip("/")
-        for suf in ("/chat/completions", "/v1/chat/completions"):
-            if url.endswith(suf):
-                url = url[: -len(suf)]
-                break
-        url = url + "/chat/completions"
+        url = chat_completions_url(self.base_url)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -71,6 +110,10 @@ class ArkClassifier:
         """
         if not self.configured or not keyword:
             return None, True
+        digest = "a:" + hashlib.md5(image_bytes).hexdigest()
+        cached = _cache_get(digest)
+        if cached is not None:
+            return (cached[0] or None), bool(cached[1])
         b64 = base64.b64encode(image_bytes).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
         payload = {
@@ -94,12 +137,7 @@ class ArkClassifier:
                 }
             ],
         }
-        url = self.base_url.strip().rstrip("/")
-        for suf in ("/chat/completions", "/v1/chat/completions"):
-            if url.endswith(suf):
-                url = url[: -len(suf)]
-                break
-        url = url + "/chat/completions"
+        url = chat_completions_url(self.base_url)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -122,13 +160,16 @@ class ArkClassifier:
                     except Exception:
                         obj = None
             if not isinstance(obj, dict):
+                _cache_put(digest, [None, True])
                 return None, True
             topic = str(obj.get("topic") or "").strip()
             topic = topic.strip('"\'。.,， ')
             topic = topic.replace("/", "_").replace("\\", "_")
             matched = obj.get("match")
             if not isinstance(matched, bool):
+                _cache_put(digest, [topic or None, True])
                 return topic or None, True
+            _cache_put(digest, [topic or None, matched])
             return (topic or None), matched
         except Exception:
             return None, True

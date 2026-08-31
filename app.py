@@ -13,6 +13,8 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 import agent
 import crawler
 import memory as memory_mod
+import pipeline
+import task_state as ts
 from classifier import ArkClassifier
 from logger_setup import setup_logging
 from saver import DEDUP_FILE, Saver
@@ -42,6 +44,8 @@ LOG_DIR = os.path.join(BASE_DIR, CONFIG["logs"]["dir"])
 logger = setup_logging(LOG_DIR)
 root_dir = os.path.join(BASE_DIR, SAVE_CFG["root_dir"])
 saver = Saver(root_dir)
+ts.init_logger(logger)
+pipeline.init(saver, SAVE_CFG, CRAWL_CFG, SEARCH_CFG, FILTER_CFG, root_dir)
 
 HISTORY_PATH = os.path.join(LOG_DIR, "history.json")
 _history_lock = threading.Lock()
@@ -64,130 +68,11 @@ def _save_history(history):
     except Exception:
         pass
 
-# 任务状态（内存中）
-_state = {
-    "running": False,
-    "paused": False,
-    "tasks": {},          # keyword -> 状态
-    "log": [],            # 运行日志（供界面显示）
-    "started": None,
-}
-_state_lock = threading.Lock()
-_pool = None
-_pause_event = threading.Event()
-_pause_event.set()  # 默认未暂停
-_cancel_event = threading.Event()
+# 任务状态 / 锁 / 事件 / 日志缓冲已迁移至 task_state 模块
+_task_queue = []          # 排队任务 [(goal, llm, search_keys)]
+_queue_lock = threading.Lock()
 
 app = Flask(__name__)
-
-
-def _append_log(line: str):
-    with _state_lock:
-        _state["log"].append(line)
-        if len(_state["log"]) > 500:
-            _state["log"] = _state["log"][-500:]
-    logger.info(line)
-
-
-def _mime_for(ext: str) -> str:
-    return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}.get(
-        ext.lstrip("."), "image/jpeg"
-    )
-
-
-def _process_keyword(keyword, count, concurrency, model, base_url, api_key,
-                    provider="bing", search_keys=None, filters=None):
-    search_keys = search_keys or {}
-    filters = filters or {}
-    min_w = int(filters.get("min_width") or MIN_WIDTH)
-    min_h = int(filters.get("min_height") or MIN_HEIGHT)
-    exclude = set(filters.get("exclude_topics") or []) or EXCLUDE_TOPICS
-    allowed = tuple(SAVE_CFG["allowed_exts"])
-    max_kb = int(SAVE_CFG["max_size_kb"])
-    classifier = ArkClassifier(base_url, api_key, model)
-
-    with _state_lock:
-        _state["tasks"][keyword] = {
-            "keyword": keyword,
-            "status": "搜索中",
-            "downloaded": 0,
-            "failed": 0,
-            "saved": 0,
-            "errors": {},
-            "folder": os.path.join(root_dir, keyword),
-        }
-
-    seq = 0
-    try:
-        if provider == "pixabay" and search_keys.get("pixabay"):
-            urls = crawler.pixabay_search(keyword, count, search_keys["pixabay"])
-        elif provider == "pexels" and search_keys.get("pexels"):
-            urls = crawler.pexels_search(keyword, count, search_keys["pexels"])
-        else:
-            urls = crawler.search_image_urls(keyword, limit=count)
-    except Exception as e:
-        _append_log(f"[{keyword}] 搜索失败: {e}")
-        with _state_lock:
-            _state["tasks"][keyword]["status"] = "搜索失败"
-        return
-
-    with _state_lock:
-        _state["tasks"][keyword]["status"] = f"搜索到 {len(urls)} 张，开始下载"
-
-    for url in urls:
-        if _cancel_event.is_set():
-            break
-        _pause_event.wait()
-        if _cancel_event.is_set():
-            break
-        seq += 1
-        data, ext, reason = crawler.download_image(url, max_kb, allowed)
-        if data is None:
-            with _state_lock:
-                st = _state["tasks"][keyword]
-                st["failed"] += 1
-                st["errors"][reason] = st["errors"].get(reason, 0) + 1
-            continue
-
-        if min_w or min_h:
-            dim = crawler.image_dimensions(data)
-            if dim and (dim[0] < min_w or dim[1] < min_h):
-                with _state_lock:
-                    st = _state["tasks"][keyword]
-                    st["failed"] += 1
-                    st["errors"]["图片过小"] = st["errors"].get("图片过小", 0) + 1
-                continue
-
-        mime = _mime_for(ext)
-        topic, matched = classifier.analyze(data, mime, keyword)
-        if not matched:
-            with _state_lock:
-                st = _state["tasks"][keyword]
-                st["failed"] += 1
-                st["errors"]["与主题不符"] = st["errors"].get("与主题不符", 0) + 1
-            continue
-        if topic in exclude:
-            with _state_lock:
-                st = _state["tasks"][keyword]
-                st["failed"] += 1
-                st["errors"]["主题被排除"] = st["errors"].get("主题被排除", 0) + 1
-            continue
-        saved_path = saver.save(data, ext, keyword, topic, seq)
-
-        with _state_lock:
-            st = _state["tasks"][keyword]
-            st["downloaded"] += 1
-            if saved_path:
-                st["saved"] += 1
-
-        _append_log(
-            f"[{keyword}] {'保存' if saved_path else '跳过(重复)'} "
-            f"{os.path.basename(saved_path or url)}"
-        )
-
-    with _state_lock:
-        _state["tasks"][keyword]["status"] = "已取消" if _cancel_event.is_set() else "完成"
-        return dict(_state["tasks"][keyword])
 
 
 @app.route("/")
@@ -223,88 +108,15 @@ def api_config():
 
 @app.route("/api/status")
 def api_status():
-    with _state_lock:
+    with ts._state_lock:
         return jsonify({
-            "running": _state["running"],
-            "paused": _state["paused"],
-            "agent_final": _state.get("agent_final"),
-            "tasks": _state["tasks"],
-            "log": list(_state["log"]),
+            "running": ts._state["running"],
+            "queue": len(_task_queue),
+            "paused": ts._state["paused"],
+            "agent_final": ts._state.get("agent_final"),
+            "tasks": ts._state["tasks"],
+            "log": list(ts._state["log"]),
         })
-
-
-def _process_url(page_url, count, model, base_url, api_key, filters=None):
-    filters = filters or {}
-    min_w = int(filters.get("min_width") or MIN_WIDTH)
-    min_h = int(filters.get("min_height") or MIN_HEIGHT)
-    exclude = set(filters.get("exclude_topics") or []) or EXCLUDE_TOPICS
-    allowed = tuple(SAVE_CFG["allowed_exts"])
-    max_kb = int(SAVE_CFG["max_size_kb"])
-    classifier = ArkClassifier(base_url, api_key, model)
-    name = os.path.basename(page_url.rstrip("/")) or page_url
-
-    with _state_lock:
-        _state["tasks"][name] = {
-            "keyword": name,
-            "status": "解析页面",
-            "downloaded": 0,
-            "failed": 0,
-            "saved": 0,
-            "errors": {},
-            "folder": os.path.join(root_dir, name),
-        }
-
-    try:
-        urls = crawler.extract_image_urls(page_url)
-    except Exception as e:
-        _append_log(f"[URL {name}] 解析失败: {e}")
-        with _state_lock:
-            _state["tasks"][name]["status"] = "解析失败"
-        return
-
-    seq = 0
-    for url in urls[:count]:
-        if _cancel_event.is_set():
-            break
-        _pause_event.wait()
-        if _cancel_event.is_set():
-            break
-        seq += 1
-        data, ext, reason = crawler.download_image(url, max_kb, allowed)
-        if data is None:
-            with _state_lock:
-                st = _state["tasks"][name]
-                st["failed"] += 1
-                st["errors"][reason] = st["errors"].get(reason, 0) + 1
-            continue
-        if min_w or min_h:
-            dim = crawler.image_dimensions(data)
-            if dim and (dim[0] < min_w or dim[1] < min_h):
-                with _state_lock:
-                    st = _state["tasks"][name]
-                    st["failed"] += 1
-                    st["errors"]["图片过小"] = st["errors"].get("图片过小", 0) + 1
-                continue
-        topic = classifier.classify(data, _mime_for(ext))
-        if topic in exclude:
-            with _state_lock:
-                st = _state["tasks"][name]
-                st["failed"] += 1
-                st["errors"]["主题被排除"] = st["errors"].get("主题被排除", 0) + 1
-            continue
-        saved_path = saver.save(data, ext, name, topic, seq)
-        with _state_lock:
-            st = _state["tasks"][name]
-            st["downloaded"] += 1
-            if saved_path:
-                st["saved"] += 1
-        _append_log(
-            f"[URL {name}] {'保存' if saved_path else '跳过(重复)'} "
-            f"{os.path.basename(saved_path or url)}"
-        )
-    with _state_lock:
-        _state["tasks"][name]["status"] = "已取消" if _cancel_event.is_set() else "完成"
-        return dict(_state["tasks"][name])
 
 
 def _wait_all(futures, on_done):
@@ -312,41 +124,41 @@ def _wait_all(futures, on_done):
         try:
             f.result()
         except Exception as e:
-            _append_log(f"任务异常: {e}")
+            ts.append_log(f"任务异常: {e}")
     on_done()
 
 
 @app.route("/api/pause", methods=["POST"])
 def api_pause():
-    with _state_lock:
-        if not _state["running"] or _state["paused"]:
+    with ts._state_lock:
+        if not ts._state["running"] or ts._state["paused"]:
             return jsonify({"ok": False, "error": "当前无运行中任务可暂停"}), 400
-        _state["paused"] = True
-    _pause_event.clear()
-    _append_log("任务已暂停")
+        ts._state["paused"] = True
+    ts._pause_event.clear()
+    ts.append_log("任务已暂停")
     return jsonify({"ok": True})
 
 
 @app.route("/api/resume", methods=["POST"])
 def api_resume():
-    with _state_lock:
-        if not _state["running"] or not _state["paused"]:
+    with ts._state_lock:
+        if not ts._state["running"] or not ts._state["paused"]:
             return jsonify({"ok": False, "error": "当前无暂停任务可恢复"}), 400
-        _state["paused"] = False
-    _pause_event.set()
-    _append_log("任务已恢复")
+        ts._state["paused"] = False
+    ts._pause_event.set()
+    ts.append_log("任务已恢复")
     return jsonify({"ok": True})
 
 
 @app.route("/api/cancel", methods=["POST"])
 def api_cancel():
-    with _state_lock:
-        if not _state["running"]:
+    with ts._state_lock:
+        if not ts._state["running"]:
             return jsonify({"ok": False, "error": "当前无运行中任务可取消"}), 400
-        _state["paused"] = False
-    _cancel_event.set()
-    _pause_event.set()  # 让处于暂停的线程解除阻塞并检查取消
-    _append_log("正在取消任务...")
+        ts._state["paused"] = False
+    ts._cancel_event.set()
+    ts._pause_event.set()  # 让处于暂停的线程解除阻塞并检查取消
+    ts.append_log("正在取消任务...")
     return jsonify({"ok": True})
 
 
@@ -376,14 +188,14 @@ def _report_lines(report):
 
 @app.route("/api/report")
 def api_report():
-    with _state_lock:
-        return jsonify(_state.get("report"))
+    with ts._state_lock:
+        return jsonify(ts._state.get("report"))
 
 
 @app.route("/api/export")
 def api_export():
-    with _state_lock:
-        report = _state.get("report")
+    with ts._state_lock:
+        report = ts._state.get("report")
     if not report:
         return jsonify({"ok": False, "error": "暂无报告"}), 400
     text = "\n".join(_report_lines(report))
@@ -479,9 +291,9 @@ def api_browse():
 
 
 def _finalize():
-    with _state_lock:
-        _state["running"] = False
-        _state["paused"] = False
+    with ts._state_lock:
+        ts._state["running"] = False
+        ts._state["paused"] = False
         items = [
             {
                 "keyword": t.get("keyword"),
@@ -492,13 +304,13 @@ def _finalize():
                 "errors": t.get("errors", {}),
                 "folder": t.get("folder", ""),
             }
-            for t in _state["tasks"].values()
+            for t in ts._state["tasks"].values()
         ]
-        _state["report"] = {
+        ts._state["report"] = {
             "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "items": items,
         }
-        run = _state.get("run")
+        run = ts._state.get("run")
         if run:
             run["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             run["items"] = items
@@ -512,19 +324,19 @@ def _finalize():
                 history = _load_history()
                 history.append(run)
                 _save_history(history)
-    _cancel_event.clear()
-    _pause_event.set()
-    _append_log("任务结束")
+    ts._cancel_event.clear()
+    ts._pause_event.set()
+    ts.append_log("任务结束")
 
 
 def collect_one(keyword, count, provider, search_keys, model, base_url, api_key, filters=None):
     """供 Agent 工具调用：采集单个关键词，返回该关键词结果汇总。"""
-    return _process_keyword(keyword, count, 1, model, base_url, api_key, provider, search_keys, filters)
+    return pipeline.process_keyword(keyword, count, int(CRAWL_CFG.get("max_concurrency", 4)), model, base_url, api_key, provider, search_keys, filters)
 
 
 def collect_url(page_url, count, model, base_url, api_key, filters=None):
     """供 Agent 工具调用：从网页提取图片采集，返回结果汇总。"""
-    return _process_url(page_url, count, model, base_url, api_key, filters)
+    return pipeline.process_url(page_url, count, model, base_url, api_key, filters)
 
 
 def _filters_from_args(args):
@@ -559,13 +371,13 @@ def _agent_dispatch(name, args, llm, search_keys):
 def _agent_worker(goal, llm, search_keys):
     def on_event(kind, payload):
         if kind == "tool":
-            _append_log("[Agent] 调用工具: " + payload)
+            ts.append_log("[Agent] 调用工具: " + payload)
         elif kind == "error":
-            _append_log("[Agent] 出错: " + payload)
+            ts.append_log("[Agent] 出错: " + payload)
         elif kind == "final":
-            _append_log("[Agent] 总结:\n" + payload)
-            with _state_lock:
-                _state["agent_final"] = payload
+            ts.append_log("[Agent] 总结:\n" + payload)
+            with ts._state_lock:
+                ts._state["agent_final"] = payload
 
     prefs = {
         "provider": SEARCH_CFG.get("provider"),
@@ -577,8 +389,49 @@ def _agent_worker(goal, llm, search_keys):
     mem_ctx = memory_mod.build_context(goal, prefs)
     agent.run_agent(goal, llm["base_url"], llm["api_key"], llm["model"],
                     lambda n, a: _agent_dispatch(n, a, llm, search_keys), on_event,
+                    max_iter=int(CONFIG.get("agent", {}).get("max_iter", 15)),
                     memory_context=mem_ctx)
     _finalize()
+    _start_next_from_queue()
+
+
+def _reset_run_state(goal, llm):
+    with ts._state_lock:
+        ts._state["running"] = True
+        ts._state["paused"] = False
+        ts._state["tasks"] = {}
+        ts._state["log"] = []
+        ts._state["started"] = None
+        ts._state["report"] = None
+        ts._state["run"] = {
+            "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "goal": goal,
+            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": None,
+            "keywords": [],
+            "urls": [],
+            "count": 0,
+            "concurrency": 1,
+            "model": llm["model"],
+            "base_url": llm["base_url"],
+            "items": [],
+            "summary": {},
+        }
+        ts._state["agent_final"] = None
+    ts._cancel_event.clear()
+    ts._pause_event.set()
+    ts.append_log("[Agent] 目标: " + goal)
+
+
+def _start_next_from_queue():
+    with _queue_lock:
+        if not _task_queue:
+            return
+        goal, llm, search_keys = _task_queue.pop(0)
+        remaining = len(_task_queue)
+    ts.append_log(f"[队列] 开始下一个排队任务（还剩 {remaining} 个）")
+    _reset_run_state(goal, llm)
+    threading.Thread(target=_agent_worker, args=(goal, llm, search_keys), daemon=True).start()
 
 
 @app.route("/api/agent/start", methods=["POST"])
@@ -607,35 +460,17 @@ def api_agent_start():
         "pexels": SEARCH_CFG.get("pexels", {}).get("api_key", ""),
     }
 
-    with _state_lock:
-        if _state["running"]:
-            return jsonify({"ok": False, "error": "已有任务在运行"}), 400
-        _state["running"] = True
-        _state["paused"] = False
-        _state["tasks"] = {}
-        _state["log"] = []
-        _state["started"] = None
-        _state["report"] = None
-        _state["run"] = {
-            "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
-            "goal": goal,
-            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "finished_at": None,
-            "keywords": [],
-            "urls": [],
-            "count": 0,
-            "concurrency": 1,
-            "model": llm["model"],
-            "base_url": llm["base_url"],
-            "items": [],
-            "summary": {},
-        }
-        _state["agent_final"] = None
-    _cancel_event.clear()
-    _pause_event.set()
-    _append_log("[Agent] 目标: " + goal)
+    with ts._state_lock:
+        already_running = ts._state["running"]
+    if already_running:
+        with _queue_lock:
+            _task_queue.append((goal, llm, search_keys))
+            position = len(_task_queue)
+        ts.append_log(f"[队列] 已有任务运行中，加入队列（第 {position} 位）: " + goal)
+        return jsonify({"ok": True, "queued": True, "position": position})
+    _reset_run_state(goal, llm)
     threading.Thread(target=_agent_worker, args=(goal, llm, search_keys), daemon=True).start()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "queued": False})
 
 
 if __name__ == "__main__":

@@ -119,9 +119,8 @@ def download_image(url: str, max_size_kb: int, allowed_exts: tuple, timeout: int
         resp = requests.get(url, headers=HEADERS, timeout=timeout, stream=True)
         resp.raise_for_status()
         ctype = resp.headers.get("Content-Type", "")
-        if "image" not in ctype and not ctype:
-            # 无 Content-Type 时继续尝试
-            pass
+        if ctype and "image" not in ctype:
+            return None, None, "非图片内容"
         data = resp.content
     except Exception:
         return None, None, "下载失败"

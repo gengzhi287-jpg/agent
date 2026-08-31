@@ -7,6 +7,8 @@
 import json
 import requests
 
+from utils import chat_completions_url
+
 SYSTEM = (
     "你是一个素材采集 Agent。用户会告诉你想要收集什么样的图片素材。"
     "请严格根据用户要求的主题采集，不要偏离或替换成别的主题（例如用户要「零食」就采集零食，不要采鸟类）。"
@@ -66,16 +68,8 @@ TOOLS = [
 
 
 def _chat_url(base_url):
-    """把用户填的 Base URL 归一化到 {base}/chat/completions。
-
-    容错：允许用户多填了 /chat/completions 或末尾带斜杠，自动去掉，避免拼成双份。
-    """
-    u = base_url.strip().rstrip("/")
-    for suf in ("/chat/completions", "/v1/chat/completions"):
-        if u.endswith(suf):
-            u = u[: -len(suf)]
-            break
-    return u + "/chat/completions"
+    """把用户填的 Base URL 归一化到 {base}/chat/completions（见 utils）。"""
+    return chat_completions_url(base_url)
 
 
 def _err_msg(e):
@@ -150,5 +144,13 @@ def run_agent(goal, base_url, api_key, model, dispatch, on_event, max_iter=15, m
             text = (msg.get("content") or "").strip()
             on_event("final", text)
             return text
-    on_event("final", "已达到最大工具轮次，任务结束")
-    return None
+    # 达到轮次上限：让模型基于已有工作补一次总结，而不是静默结束
+    messages.append({"role": "user", "content": "工具调用轮次已用完，请根据目前已完成的工作直接给出中文总结。"})
+    try:
+        data = llm_chat(base_url, api_key, model, messages)
+        text = (data["choices"][0]["message"].get("content") or "").strip()
+    except Exception as e:
+        on_event("error", _err_msg(e))
+        return None
+    on_event("final", text)
+    return text
