@@ -57,6 +57,18 @@
   tr:last-child td { border-bottom:0; }
   .tag-ok{color:var(--ok)} .tag-warn{color:var(--warn)} .tag-err{color:var(--err)}
   .hint { font-size:12px; color:#9aa0b0; margin:4px 0; }
+.tl-item { display:flex; gap:8px; align-items:flex-start; padding:6px 4px 6px 10px; border-left:3px solid var(--line); margin:2px 0 2px 6px; font-size:13px; }
+.tl-icon { flex:none; }
+.tl-ts { margin-left:auto; font-size:11px; color:#9aa0b0; flex:none; }
+.tl-plan { border-left-color:#6366f1; }
+.tl-tool { border-left-color:#0ea5e9; }
+.tl-ok { border-left-color:var(--ok); }
+.tl-err { border-left-color:var(--err); }
+.tl-reflect { border-left-color:var(--warn); }
+.tl-replan { border-left-color:#a855f7; }
+.tl-final { border-left-color:#0d9488; }
+.tl-steps { margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; }
+.tl-chip { background:#eef2ff; color:#3730a3; border-radius:6px; padding:2px 8px; font-size:12px; }
 
   .logbox { background:#0f172a; color:#cbd5e1; font-family:Consolas,monospace; font-size:12px; padding:14px; border-radius:10px; height:220px; overflow:auto; white-space:pre-wrap; }
   .btn-mini { background:#dbeafe; color:var(--accent); border:1px solid #bfdbfe; padding:5px 12px; border-radius:8px; cursor:pointer; font-size:12px; }
@@ -101,6 +113,15 @@
       <summary>实时进度</summary>
       <div class="pad">
         <table id="tasks"><thead><tr><th>任务</th><th>状态</th><th>已下载</th><th>已保存</th><th>失败</th></tr></thead><tbody></tbody></table>
+      </div>
+    </details>
+
+    <details open id="traceCard" style="display:none">
+      <summary>决策链路</summary>
+      <div class="pad">
+        <div id="traceStats" class="hint"></div>
+        <div id="traceList"></div>
+        <div class="hint" style="margin-top:6px"><a id="traceFull" href="#" target="_blank">查看完整 trace（JSON）→</a></div>
       </div>
     </details>
 
@@ -275,6 +296,7 @@ function statusPoll() {
         <td>${t.downloaded}</td><td class="tag-ok">${t.saved}</td><td class="tag-err">${t.failed}</td>`;
       tbody.appendChild(tr);
     });
+    renderTrace(s.trace_tail, s.trace_run_id);
     const box = $('logbox');
     box.textContent = s.log.join('\n');
     box.scrollTop = box.scrollHeight;
@@ -284,6 +306,46 @@ function statusPoll() {
       loadBrowse();
     }
   }).catch(() => {});
+}
+function renderTrace(events, runId) {
+  const card = $('traceCard');
+  if (!events || !events.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  $('traceFull').href = '/api/trace/' + runId;
+  let tokens = 0, tools = 0, replans = 0;
+  let html = '';
+  events.forEach(e => {
+    const k = e.kind;
+    if (k === 'llm') { tokens += (e.usage && e.usage.total_tokens) || 0; return; }
+    if (k === 'tool_result') tools++;
+    if (k === 'replan') replans++;
+    let icon = '\u2022', cls = '', body = '';
+    if (k === 'plan') {
+      icon = '\uD83D\uDCCB'; cls = 'tl-plan';
+      body = '<b>采集计划</b>（' + e.steps.length + ' 步）' + (e.reason ? ' — ' + escapeHtml(e.reason) : '');
+      body += '<div class="tl-steps">' + e.steps.map((st, i) => '<span class="tl-chip">' + (i+1) + '. ' + escapeHtml(st.keyword) + ' × ' + st.count + (st.source ? ' @' + st.source : '') + '</span>').join('') + '</div>';
+    } else if (k === 'tool_call') {
+      icon = '\uD83D\uDD27'; cls = 'tl-tool';
+      body = '<b>执行</b> ' + escapeHtml((e.args && e.args.keyword) || '') + ' × ' + ((e.args && e.args.count) || '');
+    } else if (k === 'tool_result') {
+      const r = e.result || {};
+      icon = r.error ? '\u26A0\uFE0F' : '\u2705'; cls = r.error ? 'tl-err' : 'tl-ok';
+      body = r.error ? ('出错：' + escapeHtml(String(r.error)))
+        : ('保存 <b>' + (r.saved || 0) + '</b> 张 · 失败 ' + (r.failed || 0) + ' · 用时 ' + (e.elapsed_s || 0) + 's');
+    } else if (k === 'reflect') {
+      icon = '\uD83E\uDD14'; cls = 'tl-reflect';
+      body = '<b>反思</b> ' + escapeHtml(e.comment || '');
+    } else if (k === 'replan') {
+      icon = '\uD83D\uDD00'; cls = 'tl-replan';
+      body = '<b>重规划</b>（' + e.steps.length + ' 步）' + (e.comment ? ' — ' + escapeHtml(e.comment) : '');
+    } else if (k === 'final') {
+      icon = '\uD83C\uDFC1'; cls = 'tl-final';
+      body = '<b>任务总结</b>';
+    } else { return; }
+    html += '<div class="tl-item ' + cls + '"><span class="tl-icon">' + icon + '</span><div>' + body + '</div><span class="tl-ts">' + (e.ts || '').slice(11) + '</span></div>';
+  });
+  $('traceStats').textContent = '工具调用 ' + tools + ' 次 · 重规划 ' + replans + ' 次' + (tokens ? ' · LLM 共 ' + tokens + ' tokens' : '');
+  $('traceList').innerHTML = html;
 }
 function renderReport(r) {
   if (!r || !r.items || !r.items.length) { $('reportCard').style.display = 'none'; return; }
@@ -308,13 +370,14 @@ function fetchHistory() {
 function renderHistory(list) {
   const el = $('historyList');
   if (!list || !list.length) { el.innerHTML = '<div class="hint">暂无历史记录</div>'; return; }
-  let html = '<table><thead><tr><th>时间</th><th>任务</th><th>下载</th><th>保存</th><th>失败</th><th></th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>时间</th><th>任务</th><th>下载</th><th>保存</th><th>失败</th><th>Tokens</th><th></th></tr></thead><tbody>';
   list.forEach(h => {
     const kw = (h.keywords || []).join('、') || (h.urls || []).join('、') || '-';
     const s = h.summary || {};
     html += '<tr><td>' + escapeHtml(h.started_at || '') + '</td><td>' + escapeHtml(kw) + '</td>'
       + '<td>' + (s.downloaded || 0) + '</td><td class="tag-ok">' + (s.saved || 0) + '</td>'
       + '<td class="tag-err">' + (s.failed || 0) + '</td>'
+      + '<td>' + ((h.usage && h.usage.total_tokens) || '-') + '</td>'
       + '<td><button class="btn-mini" data-id="' + h.id + '">查看</button></td></tr>';
   });
   html += '</tbody></table>';

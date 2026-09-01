@@ -15,6 +15,7 @@ import crawler
 import memory as memory_mod
 import pipeline
 import task_state as ts
+import tracer
 from classifier import ArkClassifier
 from logger_setup import setup_logging
 from saver import DEDUP_FILE, Saver
@@ -109,14 +110,19 @@ def api_config():
 @app.route("/api/status")
 def api_status():
     with ts._state_lock:
-        return jsonify({
+        run_id = (ts._state.get("run") or {}).get("id")
+        payload = {
             "running": ts._state["running"],
             "queue": len(_task_queue),
             "paused": ts._state["paused"],
             "agent_final": ts._state.get("agent_final"),
             "tasks": ts._state["tasks"],
             "log": list(ts._state["log"]),
-        })
+        }
+    if run_id:
+        payload["trace_run_id"] = run_id
+        payload["trace_tail"] = tracer.read_trace(run_id)[-80:]
+    return jsonify(payload)
 
 
 def _wait_all(futures, on_done):
@@ -234,6 +240,11 @@ def api_history_detail(rid):
     return jsonify({"ok": False, "error": "记录不存在"}), 404
 
 
+@app.route("/api/trace/<rid>")
+def api_trace(rid):
+    return jsonify({"events": tracer.read_trace(rid)})
+
+
 @app.route("/api/memory", methods=["GET", "POST", "DELETE"])
 def api_memory():
     if request.method == "GET":
@@ -320,6 +331,17 @@ def _finalize():
                 "failed": sum(i.get("failed", 0) for i in items),
                 "tasks": len(items),
             }
+            # token 用量统计（汇总 trace 中各次 LLM 调用的 usage）
+            try:
+                usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                for e in tracer.read_trace(run["id"]):
+                    if e.get("kind") == "llm" and isinstance(e.get("usage"), dict):
+                        usage["prompt_tokens"] += int(e["usage"].get("prompt_tokens") or 0)
+                        usage["completion_tokens"] += int(e["usage"].get("completion_tokens") or 0)
+                        usage["total_tokens"] += int(e["usage"].get("total_tokens") or 0)
+                run["usage"] = usage
+            except Exception:
+                pass
             with _history_lock:
                 history = _load_history()
                 history.append(run)
@@ -372,6 +394,13 @@ def _agent_worker(goal, llm, search_keys):
     def on_event(kind, payload):
         if kind == "tool":
             ts.append_log("[Agent] 调用工具: " + payload)
+        elif kind == "plan":
+            ts.append_log("[Agent] 采集计划: " + json.dumps(payload["steps"], ensure_ascii=False)
+                          + ("（" + payload["reason"] + "）" if payload.get("reason") else ""))
+        elif kind == "reflect":
+            ts.append_log("[Agent] 反思: " + str(payload))
+        elif kind == "replan":
+            ts.append_log("[Agent] 重规划: " + json.dumps(payload["steps"], ensure_ascii=False))
         elif kind == "error":
             ts.append_log("[Agent] 出错: " + payload)
         elif kind == "final":
@@ -387,10 +416,14 @@ def _agent_worker(goal, llm, search_keys):
     }
     memory_mod.forget_stale()
     mem_ctx = memory_mod.build_context(goal, prefs)
-    agent.run_agent(goal, llm["base_url"], llm["api_key"], llm["model"],
-                    lambda n, a: _agent_dispatch(n, a, llm, search_keys), on_event,
-                    max_iter=int(CONFIG.get("agent", {}).get("max_iter", 15)),
-                    memory_context=mem_ctx)
+    with ts._state_lock:
+        run_id = (ts._state.get("run") or {}).get("id")
+    tr = tracer.Tracer(run_id or datetime.now().strftime("%Y%m%d_%H%M%S"))
+    agent.run_agent_v2(goal, llm["base_url"], llm["api_key"], llm["model"],
+                       lambda n, a: _agent_dispatch(n, a, llm, search_keys), on_event,
+                       max_replans=int(CONFIG.get("agent", {}).get("max_replans", 3)),
+                       memory_context=mem_ctx, tracer=tr,
+                       count_default=int(SAVE_CFG.get("count_per_keyword", 20)))
     _finalize()
     _start_next_from_queue()
 

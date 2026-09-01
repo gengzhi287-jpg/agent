@@ -20,3 +20,4 @@ _*.log
 .DS_Store
 Thumbs.db
 classify_cache.json
+evals/results/

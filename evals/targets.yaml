@@ -1,0 +1,24 @@
+# 素材采集 Agent 评测集（20 例）
+# goal: 下达给 Agent 的自然语言目标
+# min_saved: 期望最少保存张数（足额判定）
+# banned_topics: 保存结果中不应出现的主题词（人工/抽检参考）
+- { goal: "收集3张猫咪的图片", min_saved: 3, banned_topics: ["狗", "广告"] }
+- { goal: "收集3张咖啡拉花图片", min_saved: 3, banned_topics: ["文字海报"] }
+- { goal: "收集4张山水风景素材，尽量高清", min_saved: 3, banned_topics: ["人像"] }
+- { goal: "收集3张沙漠风景图片", min_saved: 3, banned_topics: ["海洋"] }
+- { goal: "收集3张海洋生物图片", min_saved: 3, banned_topics: ["沙漠"] }
+- { goal: "收集4张智能手机产品图", min_saved: 3, banned_topics: ["老人", "风景"] }
+- { goal: "收集3张笔记本电脑图片", min_saved: 3, banned_topics: ["手机"] }
+- { goal: "收集3张零食图片", min_saved: 2, banned_topics: ["鸟类", "标本"] }
+- { goal: "收集3张新鲜水果图片", min_saved: 3, banned_topics: ["蔬菜"] }
+- { goal: "收集3张蔬菜食材图片", min_saved: 3, banned_topics: ["水果"] }
+- { goal: "收集3张跑车图片", min_saved: 3, banned_topics: ["自行车"] }
+- { goal: "收集3张自行车骑行图片", min_saved: 3, banned_topics: ["汽车"] }
+- { goal: "收集3张城市夜景图片", min_saved: 3, banned_topics: ["白天"] }
+- { goal: "收集3张雪景图片", min_saved: 3, banned_topics: ["沙滩"] }
+- { goal: "收集3张樱花图片", min_saved: 3, banned_topics: ["枫叶"] }
+- { goal: "收集3张狗狗图片", min_saved: 3, banned_topics: ["猫"] }
+- { goal: "收集3张书籍堆叠的图片", min_saved: 2, banned_topics: ["手机"] }
+- { goal: "收集3张健身房场景图片", min_saved: 2, banned_topics: ["美食"] }
+- { goal: "收集手机和耳机素材各2张", min_saved: 3, banned_topics: ["冰箱"] }
+- { goal: "收集3张极简风格的办公桌图片", min_saved: 2, banned_topics: ["床"] }

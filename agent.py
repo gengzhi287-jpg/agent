@@ -154,3 +154,193 @@ def run_agent(goal, base_url, api_key, model, dispatch, on_event, max_iter=15, m
         return None
     on_event("final", text)
     return text
+
+# ================= Plan-and-Execute（v3.0） =================
+
+PLAN_SYSTEM = (
+    """你是一个素材采集规划器。根据用户的素材需求，输出一份 JSON 采集计划，只输出 JSON，不要其他文字。
+格式：{"steps": [{"keyword": "关键词", "count": 数量, "source": "bing", "min_width": 0, "min_height": 0, "exclude_topics": []}], "reason": "一句话规划思路"}
+要求：1-6 个步骤；keyword 用适合图片搜索的词；count 取 1-50；source 只能是 bing/pixabay/pexels；source/min_width/min_height/exclude_topics 可省略。"""
+)
+
+REFLECT_SYSTEM = (
+    """你是素材采集 Agent 的反思模块。评估刚执行的采集步骤结果，判断是否需要调整后续计划（例如保存数不足、大量失败、主题跑偏）。只输出 JSON，不要其他文字：
+{"satisfied": true或false, "comment": "一句话评估", "new_steps": null 或 [新的后续步骤]}
+步骤格式与计划相同；若无需调整，new_steps 为 null。"""
+)
+
+SUMMARY_SYSTEM = (
+    "你是素材采集 Agent。根据执行进展，用中文给出简洁总结："
+    "收集了哪些主题、各保存多少张、保存在哪、失败情况与建议。"
+)
+
+
+def _extract_json(text):
+    """从模型输出中提取第一个 JSON 对象；失败返回 None。"""
+    import re as _re
+    text = (text or "").strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = _re.search(r"\{.*\}", text, _re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+
+def _valid_steps(obj, max_steps=8):
+    """校验并清洗计划步骤列表；无效返回 None。"""
+    steps = (obj or {}).get("steps")
+    if not isinstance(steps, list):
+        return None
+    out = []
+    for st in steps:
+        if not isinstance(st, dict):
+            continue
+        kw = str(st.get("keyword") or "").strip()
+        if not kw:
+            continue
+        try:
+            cnt = int(st.get("count") or 20)
+        except Exception:
+            cnt = 20
+        step = {"keyword": kw, "count": max(1, min(cnt, 50))}
+        if st.get("source") in ("bing", "pixabay", "pexels"):
+            step["source"] = st["source"]
+        for k in ("min_width", "min_height"):
+            try:
+                v = int(st.get(k) or 0)
+            except Exception:
+                v = 0
+            if v > 0:
+                step[k] = v
+        if isinstance(st.get("exclude_topics"), list):
+            step["exclude_topics"] = [str(x) for x in st["exclude_topics"]][:10]
+        out.append(step)
+        if len(out) >= max_steps:
+            break
+    return out or None
+
+
+def make_plan(goal, base_url, api_key, model, memory_context="", tracer=None):
+    """规划阶段：让模型输出结构化采集计划，返回 (steps, reason)。"""
+    system = PLAN_SYSTEM
+    if memory_context:
+        system += "\n\n【跨会话记忆】\n" + memory_context
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "用户需求：" + goal},
+    ]
+    data = llm_chat(base_url, api_key, model, messages)
+    if tracer:
+        tracer.event("llm", phase="plan", usage=data.get("usage"))
+    obj = _extract_json(data["choices"][0]["message"].get("content"))
+    return _valid_steps(obj), str((obj or {}).get("reason") or "")
+
+
+def run_agent_v2(goal, base_url, api_key, model, dispatch, on_event,
+                 max_steps=8, max_replans=3, memory_context="", tracer=None,
+                 count_default=20):
+    """Plan-and-Execute 版 Agent：先规划、逐步执行、不足时反思重规划、最后总结。
+
+    on_event kind 新增: "plan" / "reflect" / "replan"。规划失败时回退到 run_agent 单循环。
+    """
+    import time as _time
+
+    # 1) 规划
+    try:
+        steps, reason = make_plan(goal, base_url, api_key, model, memory_context, tracer)
+    except Exception as e:
+        on_event("error", "规划失败，回退到单循环模式: " + _err_msg(e))
+        return run_agent(goal, base_url, api_key, model, dispatch, on_event,
+                         memory_context=memory_context)
+    if not steps:
+        on_event("error", "计划解析失败，回退到单循环模式")
+        return run_agent(goal, base_url, api_key, model, dispatch, on_event,
+                         memory_context=memory_context)
+    on_event("plan", {"steps": steps, "reason": reason})
+    if tracer:
+        tracer.event("plan", steps=steps, reason=reason)
+
+    # 2) 执行 + 按需反思/重规划
+    progress = []
+    replans = 0
+    idx = 0
+    while steps:
+        step = steps.pop(0)
+        idx += 1
+        on_event("tool", "collect_keyword " + json.dumps(step, ensure_ascii=False))
+        if tracer:
+            tracer.event("tool_call", step=idx, args=step)
+        t0 = _time.time()
+        try:
+            result = dispatch("collect_keyword", dict(step))
+        except Exception as e:
+            result = {"error": str(e)}
+        if tracer:
+            tracer.event("tool_result", step=idx, elapsed_s=round(_time.time() - t0, 1),
+                         result=result)
+        progress.append({"step": step, "result": result})
+
+        try:
+            saved = int((result or {}).get("saved", 0))
+        except Exception:
+            saved = 0
+        shortfall = saved < int(step.get("count", 0))
+        if not shortfall or replans >= max_replans:
+            if not steps:
+                break
+            continue
+
+        # 反思 + 可选重规划
+        messages = [
+            {"role": "system", "content": REFLECT_SYSTEM},
+            {"role": "user", "content": (
+                "用户目标：" + goal + "\n"
+                "刚执行的步骤：" + json.dumps(step, ensure_ascii=False) + "\n"
+                "执行结果：" + json.dumps(result, ensure_ascii=False) + "\n"
+                "剩余计划：" + json.dumps(steps, ensure_ascii=False) + "\n"
+                "近期进展：" + json.dumps(progress[-5:], ensure_ascii=False)
+            )},
+        ]
+        try:
+            data = llm_chat(base_url, api_key, model, messages)
+        except Exception as e:
+            on_event("error", _err_msg(e))
+            continue
+        if tracer:
+            tracer.event("llm", phase="reflect", usage=data.get("usage"))
+        obj = _extract_json(data["choices"][0]["message"].get("content")) or {}
+        comment = str(obj.get("comment") or "")
+        on_event("reflect", comment)
+        if tracer:
+            tracer.event("reflect", comment=comment, satisfied=obj.get("satisfied"))
+        new_steps = _valid_steps({"steps": obj.get("new_steps")}, max_steps) if obj.get("new_steps") else None
+        if new_steps:
+            replans += 1
+            steps = new_steps
+            on_event("replan", {"steps": new_steps, "comment": comment})
+            if tracer:
+                tracer.event("replan", steps=new_steps, comment=comment)
+
+    # 3) 总结
+    messages = [
+        {"role": "system", "content": SUMMARY_SYSTEM},
+        {"role": "user", "content": "用户目标：" + goal + "\n执行进展：" + json.dumps(progress, ensure_ascii=False)},
+    ]
+    try:
+        data = llm_chat(base_url, api_key, model, messages)
+        if tracer:
+            tracer.event("llm", phase="summary", usage=data.get("usage"))
+        text = (data["choices"][0]["message"].get("content") or "").strip()
+    except Exception as e:
+        on_event("error", _err_msg(e))
+        return None
+    if tracer:
+        tracer.event("final", summary=text)
+    on_event("final", text)
+    return text
