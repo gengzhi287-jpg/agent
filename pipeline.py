@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """采集管线：搜索 -> 并行下载 -> 两级过滤(去重/尺寸 -> 多模态校验) -> 保存。"""
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import crawler
