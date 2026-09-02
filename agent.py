@@ -166,7 +166,7 @@ PLAN_SYSTEM = (
 REFLECT_SYSTEM = (
     """你是素材采集 Agent 的反思模块。评估刚执行的采集步骤结果，判断是否需要调整后续计划（例如保存数不足、大量失败、主题跑偏）。只输出 JSON，不要其他文字：
 {"satisfied": true或false, "comment": "一句话评估", "new_steps": null 或 [新的后续步骤]}
-步骤格式与计划相同；若无需调整，new_steps 为 null。"""
+步骤格式与计划相同；可根据失败原因调整后续步骤的过滤条件（如放宽 min_width/min_height）、更换搜索词（如追加 4K/wallpaper）或更换来源；若无需调整，new_steps 为 null。"""
 )
 
 SUMMARY_SYSTEM = (

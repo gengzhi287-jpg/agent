@@ -34,7 +34,7 @@ search:
 
 save:
   root_dir: "素材库"
-  max_size_kb: 1024
+  max_size_kb: 5120
   allowed_exts: [".jpg", ".jpeg", ".png"]
   count_per_keyword: 20
 

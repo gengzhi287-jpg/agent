@@ -57,7 +57,7 @@ def pixabay_search(keyword: str, limit: int = 20, api_key: str = "", timeout: in
     data = resp.json()
     urls = []
     for hit in data.get("hits", []):
-        u = hit.get("webformatURL")
+        u = hit.get("largeImageURL") or hit.get("webformatURL")
         if u and u.startswith("http") and u not in urls:
             urls.append(u)
         if len(urls) >= limit:
@@ -76,7 +76,8 @@ def pexels_search(keyword: str, limit: int = 20, api_key: str = "", timeout: int
     data = resp.json()
     urls = []
     for ph in data.get("photos", []):
-        u = (ph.get("src") or {}).get("medium")
+        src = ph.get("src") or {}
+        u = src.get("large2x") or src.get("large") or src.get("medium")
         if u and u.startswith("http") and u not in urls:
             urls.append(u)
         if len(urls) >= limit:
